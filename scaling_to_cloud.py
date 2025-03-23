@@ -10,7 +10,7 @@ with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
 # Extract values from the config dictionary
-INSTANCE_NAME = config["instance"]["name"]
+INSTANCE_GROUP_NAME = config["instance"]["name"]
 ZONE = config["instance"]["zone"]
 # MACHINE_TYPE = config["instance"]["machine_type"]
 # IMAGE_FAMILY = config["instance"]["image_family"]
@@ -19,26 +19,34 @@ THRESHOLD = config["instance"]["threshold"]  # Percentage for CPU and Memory usa
 CHECK_INTERVAL = config["instance"]["check_interval"]  # Seconds between checks
 
 
-def scale_to_public_cloud():
+import subprocess
+
+def scale_instance_group(new_size):
     """
-    Trigger the use of an existing Google Cloud VM by starting it if needed.
+    Resize a managed instance group to the desired number of instances.
+    
+    Parameters:
+        new_size (int): The new desired number of instances in the group.
     """
-    print("Threshold exceeded. Using existing public cloud instance...")
+    print(f"Threshold exceeded. Resizing instance group to {new_size} instances...")
     command = [
         "gcloud",
         "compute",
-        "instances",
-        "start",
-        INSTANCE_NAME,
-        f"--zone={ZONE}",
+        "instance-groups",
+        "managed",
+        "resize",
+        INSTANCE_GROUP_NAME,  # Ensure this variable is defined with your instance group name
+        f"--zone={ZONE}",     # Ensure ZONE is set to your instance group's zone
+        f"--size={new_size}",
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
-        print("Instance start output:")
+        print("Instance group resize output:")
         print(result.stdout)
     except subprocess.CalledProcessError as e:
-        print("Error starting instance:")
+        print("Error resizing instance group:")
         print(e.stderr)
+
 
 
 def monitor_resources():
@@ -51,7 +59,7 @@ def monitor_resources():
         print(f"CPU Usage: {cpu_usage}% | Memory Usage: {mem_usage}%")
 
         if cpu_usage > THRESHOLD or mem_usage > THRESHOLD:
-            scale_to_public_cloud()
+            scale_instance_group()
             # Optional: Break or pause the monitor if only one instance should be launched
             # break
 
