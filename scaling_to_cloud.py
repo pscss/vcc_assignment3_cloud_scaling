@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 import psutil
+import yaml
 import subprocess
 import time
 
-# Configuration parameters
-THRESHOLD = 75  # Percentage for CPU and Memory usage
-CHECK_INTERVAL = 5  # Seconds between checks
-INSTANCE_NAME = "auto-scaled-instance"
-ZONE = "us-central1-a"
-MACHINE_TYPE = "e2-medium"
-IMAGE_FAMILY = "debian-11"
-IMAGE_PROJECT = "debian-cloud"
+
+
+
+# Load configuration from YAML file
+with open("config.yaml", "r") as file:
+    config = yaml.safe_load(file)
+
+# Extract values from the config dictionary
+INSTANCE_NAME = config["instance"]["name"]
+ZONE = config["instance"]["zone"]
+MACHINE_TYPE = config["instance"]["machine_type"]
+IMAGE_FAMILY = config["instance"]["image_family"]
+IMAGE_PROJECT = config["instance"]["image_project"]
+THRESHOLD = ["instance"]["threshold"]  # Percentage for CPU and Memory usage
+CHECK_INTERVAL = ["instance"]["check_interval"]  # Seconds between checks
 
 
 def scale_to_public_cloud():
@@ -18,6 +26,7 @@ def scale_to_public_cloud():
     Trigger a Google Cloud VM creation using the gcloud CLI.
     """
     print("Threshold exceeded. Launching new public cloud instance...")
+    # Build the command list using the config values
     command = [
         "gcloud",
         "compute",
