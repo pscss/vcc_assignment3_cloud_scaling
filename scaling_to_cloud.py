@@ -5,8 +5,6 @@ import subprocess
 import time
 
 
-
-
 # Load configuration from YAML file
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
@@ -17,8 +15,8 @@ ZONE = config["instance"]["zone"]
 MACHINE_TYPE = config["instance"]["machine_type"]
 IMAGE_FAMILY = config["instance"]["image_family"]
 IMAGE_PROJECT = config["instance"]["image_project"]
-THRESHOLD = ["instance"]["threshold"]  # Percentage for CPU and Memory usage
-CHECK_INTERVAL = ["instance"]["check_interval"]  # Seconds between checks
+THRESHOLD = config["instance"]["threshold"]  # Percentage for CPU and Memory usage
+CHECK_INTERVAL = config["instance"]["check_interval"]  # Seconds between checks
 
 
 def scale_to_public_cloud():
