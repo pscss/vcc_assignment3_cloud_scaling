@@ -3,6 +3,7 @@ import psutil
 import yaml
 import subprocess
 import time
+import threading
 
 # Load configuration from YAML file
 with open("config.yaml", "r") as file:
@@ -13,20 +14,24 @@ INSTANCE_GROUP_NAME = config["instance"]["name"]
 ZONE = config["instance"]["zone"]
 
 # Thresholds for scaling up and down
-CPU_SCALE_UP_THRESHOLD = 75     # If CPU usage exceeds 75%, consider scaling up
-MEM_SCALE_UP_THRESHOLD = 95     # If Memory usage exceeds 95%, consider scaling up
-CPU_SCALE_DOWN_THRESHOLD = 50   # If CPU usage drops below 50%, consider scaling down
-MEM_SCALE_DOWN_THRESHOLD = 50   # If Memory usage drops below 50%, consider scaling down
+CPU_SCALE_UP_THRESHOLD = 75     # Scale up if CPU usage exceeds 75%
+MEM_SCALE_UP_THRESHOLD = 95     # Scale up if Memory usage exceeds 95%
+CPU_SCALE_DOWN_THRESHOLD = 50   # Scale down if CPU usage drops below 50%
+MEM_SCALE_DOWN_THRESHOLD = 50   # Scale down if Memory usage drops below 50%
 
-CHECK_INTERVAL = config["instance"]["check_interval"]  # Seconds between checks
+CHECK_INTERVAL = config["instance"]["check_interval"]  # Seconds between resource checks
 
 # Limits for instance group size
 MAX_INSTANCES = 5
 MIN_INSTANCES = 0
 
-# Start with current instance group size.
-# You may initialize this from config or assume an initial value, e.g., 0.
+# Starting instance group size
 current_size = 0
+
+# CPU load generation configuration
+NUM_LOAD_THREADS = config["instance"].get("cpu_load_threads", 1)  # Default to 1 thread
+# Total duration (in seconds) for one complete load cycle (ramp up then ramp down)
+CPU_LOAD_CYCLE_DURATION = config["instance"].get("cpu_load_cycle_duration", 60)  # Default 60 seconds
 
 
 def scale_instance_group(new_size):
@@ -74,12 +79,67 @@ def monitor_resources():
             current_size += 1
             scale_instance_group(current_size)
 
-        # Scale down conditions: if both metrics are well below thresholds and we have instances running
+        # Scale down conditions: if both metrics are below thresholds and we have instances running
         elif (cpu_usage < CPU_SCALE_DOWN_THRESHOLD and mem_usage < MEM_SCALE_DOWN_THRESHOLD) and current_size > MIN_INSTANCES:
             current_size -= 1
             scale_instance_group(current_size)
 
         time.sleep(CHECK_INTERVAL)
 
+
+def variable_cpu_load(total_duration):
+    """
+    Generate CPU load that ramps up over the first half of the cycle and
+    then ramps down over the second half. This cycle repeats indefinitely.
+    
+    Parameters:
+        total_duration (float): Total duration (in seconds) of one complete cycle.
+    """
+    cycle = 0.1  # Duration of each mini-cycle in seconds
+    start_time = time.time()
+    while True:
+        elapsed = time.time() - start_time
+        fraction = elapsed / total_duration
+
+        if fraction >= 1.0:
+            # Reset cycle when complete
+            start_time = time.time()
+            fraction = 0.0
+
+        # Calculate intensity: ramp up for the first half, then ramp down.
+        if fraction < 0.5:
+            intensity = fraction / 0.5  # 0.0 to 1.0
+        else:
+            intensity = (1 - fraction) / 0.5  # 1.0 to 0.0
+
+        # Determine busy and sleep times based on intensity.
+        busy_time = cycle * intensity
+        sleep_time = cycle - busy_time
+
+        # Busy work: simple loop to burn CPU cycles.
+        t_start = time.time()
+        while time.time() - t_start < busy_time:
+            pass
+
+        time.sleep(sleep_time)
+
+
+def start_cpu_load(num_threads, cycle_duration):
+    """
+    Start a specified number of threads to generate variable CPU load.
+    
+    Parameters:
+        num_threads (int): Number of threads to spawn.
+        cycle_duration (float): Duration for one full ramp-up and ramp-down cycle.
+    """
+    for i in range(num_threads):
+        t = threading.Thread(target=variable_cpu_load, args=(cycle_duration,), daemon=True)
+        t.start()
+    print(f"Started {num_threads} CPU load thread(s) with a {cycle_duration}-second cycle.")
+
+
 if __name__ == "__main__":
+    # Start generating artificial variable CPU load
+    start_cpu_load(NUM_LOAD_THREADS, CPU_LOAD_CYCLE_DURATION)
+    # Begin monitoring resources and scaling accordingly
     monitor_resources()

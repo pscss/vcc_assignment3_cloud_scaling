@@ -2,3 +2,5 @@ instance:
   name: "instance-vcc-assign3"
   zone: "us-central1-a"
   check_interval: 5
+  cpu_load_threads: 2
+  cpu_load_cycle_duration: 60
