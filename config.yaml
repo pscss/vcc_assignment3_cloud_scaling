@@ -1,8 +1,4 @@
 instance:
   name: "instance-vcc-assign3"
   zone: "us-central1-a"
-  # machine_type: "n1-standard-1"
-  # image_family: "debian-9"
-  # image_project: "debian-cloud"
-  threshold: 75
   check_interval: 5
