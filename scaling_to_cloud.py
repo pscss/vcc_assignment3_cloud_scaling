@@ -197,4 +197,40 @@ def monitor_resources():
                 else:
                     print(f"Instance {new_instance} did not become RUNNING in time.")
             else:
-                print("No new instance detected after scaling up. Re
+                print("No new instance detected after scaling up. Reverting desired size.")
+        
+        # --- Scaling Down ---
+        elif (cpu_usage < CPU_SCALE_DOWN_THRESHOLD and mem_usage < MEM_SCALE_DOWN_THRESHOLD) and current_size > MIN_INSTANCES:
+            if active_instances:
+                # Remove one instance from the cloud cluster (choose one from active_instances)
+                instance_to_remove = list(active_instances)[-1]
+                desired_size = current_size - 1
+                scale_instance_group(desired_size)
+                print(f"Scaling down: Instance {instance_to_remove} scheduled for removal.")
+                active_instances.remove(instance_to_remove)
+                current_size = desired_size
+            else:
+                print("No active remote load instance found to scale down.")
+
+        time.sleep(CHECK_INTERVAL)
+
+# --------------
+# Main Execution Block with Argument Parsing
+# --------------
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Unified Load Generator and Cluster Scaling Controller")
+    parser.add_argument("--run-load", action="store_true",
+                        help="Run the unified load generator function (for local or remote node).")
+    args = parser.parse_args()
+
+    if args.run_load:
+        # This branch runs on any node (local or cloud) that should generate load.
+        start_local_load(NUM_LOAD_THREADS, CPU_LOAD_CYCLE_DURATION)
+        # Keep the load generator running indefinitely.
+        while True:
+            time.sleep(1)
+    else:
+        # Controller mode: start local load and manage scaling across the cluster.
+        print("Starting unified load generator on local node and initiating cluster monitoring...")
+        start_local_load(NUM_LOAD_THREADS, CPU_LOAD_CYCLE_DURATION)
+        monitor_resources()
