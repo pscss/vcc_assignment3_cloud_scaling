@@ -16,66 +16,62 @@ INSTANCE_GROUP_NAME = config["instance"]["name"]
 ZONE = config["instance"]["zone"]
 
 # Thresholds for scaling decisions (for the overall cluster)
-CPU_SCALE_UP_THRESHOLD = 75      # Scale up if CPU usage exceeds 75%
-MEM_SCALE_UP_THRESHOLD = 95      # Scale up if Memory usage exceeds 95%
-CPU_SCALE_DOWN_THRESHOLD = 50    # Scale down if CPU usage drops below 50%
-MEM_SCALE_DOWN_THRESHOLD = 50    # Scale down if Memory usage drops below 50%
+CPU_SCALE_UP_THRESHOLD = 75      # If local CPU > 75% trigger offloading/scale up
+MEM_SCALE_UP_THRESHOLD = 90      # If local Memory > 90% trigger offloading/scale up
+CPU_SCALE_DOWN_THRESHOLD = 50    # If local CPU < 50% trigger scale down
+MEM_SCALE_DOWN_THRESHOLD = 50    # If local Memory < 50% trigger scale down
 
 CHECK_INTERVAL = config["instance"]["check_interval"]  # Seconds between resource checks
 
 # Instance group limits
 MAX_INSTANCES = 5
-MIN_INSTANCES = 1  # Always keep at least 1 instance running
+MIN_INSTANCES = 1  # Always keep at least 1 cloud node running
 
 # Load generation settings (used uniformly on all nodes)
 NUM_LOAD_THREADS = config["instance"].get("cpu_load_threads", 1)
 CPU_LOAD_CYCLE_DURATION = config["instance"].get("cpu_load_cycle_duration", 60)  # seconds
 
 # Global variables for the controller
-current_size = MIN_INSTANCES  # start with the minimum instance count
-active_instances = set()  # names of cloud instances running our load generator
+# current_size counts the number of cloud nodes that are running load
+current_size = MIN_INSTANCES  
+# active_instances holds the names of cloud nodes that are currently "sharing load"
+active_instances = set()  
 
 # --------------
-# Unified Load Generator Function
+# Unified Load Generator Function (Local)
 # --------------
 def variable_cpu_load(total_duration):
     """
     Generate CPU load that ramps up over the first half of the cycle
     and then ramps down over the second half.
-    This function is used on both local and cloud VMs.
+    This function is used on the local machine.
     """
     cycle = 0.1  # mini-cycle duration in seconds
     start_time = time.time()
     while True:
         elapsed = time.time() - start_time
         fraction = (elapsed % total_duration) / total_duration
-
-        # Ramp up in the first half, then ramp down
-        if fraction < 0.5:
-            intensity = fraction / 0.5  # increases from 0 to 1
-        else:
-            intensity = (1 - fraction) / 0.5  # decreases from 1 to 0
-
+        # Ramp up in first half, ramp down in second half:
+        intensity = fraction / 0.5 if fraction < 0.5 else (1 - fraction) / 0.5
         busy_time = cycle * intensity
         sleep_time = cycle - busy_time
-
         t_start = time.time()
-        # Busy loop to burn CPU cycles
+        # Busy loop to burn CPU cycles:
         while time.time() - t_start < busy_time:
             _ = sum(i * i for i in range(1000))
         time.sleep(sleep_time)
 
 def start_local_load(num_threads, cycle_duration):
     """
-    Start load generator threads locally.
+    Start local load generator threads.
     """
     for _ in range(num_threads):
         t = threading.Thread(target=variable_cpu_load, args=(cycle_duration,), daemon=True)
         t.start()
-    print(f"Started {num_threads} local CPU load thread(s) with a {cycle_duration}-second cycle.")
+    print(f"Started {num_threads} local load thread(s) with a {cycle_duration}-second cycle.")
 
 # --------------
-# Remote Load Functions (for cloud VMs)
+# Remote Load Functions (for Cloud Nodes)
 # --------------
 def wait_for_instance(instance_name, timeout=300):
     """
@@ -98,13 +94,13 @@ def wait_for_instance(instance_name, timeout=300):
 
 def start_remote_load(instance_name):
     """
-    Remotely start the unified load generator on the cloud instance.
-    Assumes that the remote instance has this script (or an equivalent load generator)
-    at a specified path (adjust REMOTE_SCRIPT_PATH accordingly).
+    Remotely start a load generator on the cloud instance.
+    We use a one-liner that burns CPU cycles directly on the remote node.
     """
-    REMOTE_SCRIPT_PATH = "/home/your_username/load_generator.py"  # adjust as needed
     remote_command = (
-        f"nohup python3 {REMOTE_SCRIPT_PATH} --run-load > /dev/null 2>&1 &"
+        "nohup python3 -c \"import time, math; "
+        "while True: [math.sqrt(i) for i in range(10000)]; time.sleep(0.1)\" "
+        "> /dev/null 2>&1 &"
     )
     cmd = [
         "gcloud", "compute", "ssh", instance_name,
@@ -113,7 +109,7 @@ def start_remote_load(instance_name):
     ]
     try:
         subprocess.run(cmd, check=True)
-        print(f"Started unified load generator on remote instance: {instance_name}")
+        print(f"Started remote load on instance: {instance_name}")
     except subprocess.CalledProcessError as e:
         print(f"Error starting remote load on {instance_name}: {e}")
 
@@ -131,9 +127,6 @@ def get_instance_names():
     instances = set(result.stdout.strip().splitlines())
     return instances
 
-# --------------
-# Scaling and Monitoring Logic
-# --------------
 def scale_instance_group(new_size):
     """
     Resize the managed instance group to new_size.
@@ -153,65 +146,93 @@ def scale_instance_group(new_size):
         print("Error resizing instance group:")
         print(e.stderr)
 
+# --------------
+# Monitoring & Scaling Controller
+# --------------
 def monitor_resources():
     """
-    Monitor local CPU and Memory usage and manage scaling of the cluster.
-    
-    - If local CPU > 75% or Memory > 95% and group size < MAX_INSTANCES,
-      scale up. After scaling up, wait for the new instance to be RUNNING and
-      remotely start the unified load generator.
-    
-    - If local CPU < 50% and Memory < 50% and group size > MIN_INSTANCES,
-      scale down one instance (which will eventually stop running the load).
+    Sequence:
+      1. Run local load.
+      2. When local CPU > 75% or Memory > 90%, check if a cloud node is available.
+         - If a cloud node is available but not yet running load, remotely start load on it.
+         - Otherwise, if no cloud node is available, scale up the instance group (up to MAX_INSTANCES).
+      3. As load further increases, keep scaling up until there are 5 cloud nodes sharing the load.
+      4. Once at 5 cloud nodes, if load drops below 50% CPU and 50% memory,
+         scale down one cloud node at a time (ensuring at least one remains) until local load is below threshold.
+      5. Continually print the total (local) CPU and Memory usage.
     """
     global current_size, active_instances
 
     while True:
         cpu_usage = psutil.cpu_percent(interval=1)
         mem_usage = psutil.virtual_memory().percent
-        print(f"Local CPU: {cpu_usage}% | Memory: {mem_usage}% | Cloud instances: {current_size}")
-
-        # --- Scaling Up ---
-        if (cpu_usage > CPU_SCALE_UP_THRESHOLD or mem_usage > MEM_SCALE_UP_THRESHOLD) and current_size < MAX_INSTANCES:
-            before_instances = get_instance_names()
-            desired_size = current_size + 1
-            scale_instance_group(desired_size)
-            
-            new_instance = None
-            timeout = 300  # seconds to wait for new instance detection
-            start_wait = time.time()
-            while time.time() - start_wait < timeout:
-                after_instances = get_instance_names()
-                diff = after_instances - before_instances
-                if diff:
-                    new_instance = list(diff)[0]
-                    break
-                time.sleep(5)
-            
-            if new_instance:
-                print(f"New instance detected: {new_instance}. Waiting for it to be ready...")
-                if wait_for_instance(new_instance):
-                    start_remote_load(new_instance)
-                    active_instances.add(new_instance)
-                    current_size = desired_size  # update only if new instance came online
-                else:
-                    print(f"Instance {new_instance} did not become RUNNING in time.")
-            else:
-                print("No new instance detected after scaling up. Reverting desired size.")
+        print(f"Local CPU: {cpu_usage}% | Memory: {mem_usage}% | Cloud nodes: {current_size}")
         
-        # --- Scaling Down ---
-        elif (cpu_usage < CPU_SCALE_DOWN_THRESHOLD and mem_usage < MEM_SCALE_DOWN_THRESHOLD) and current_size > MIN_INSTANCES:
-            if active_instances:
-                # Remove one instance from the cloud cluster (choose one from active_instances)
-                instance_to_remove = list(active_instances)[-1]
-                desired_size = current_size - 1
-                scale_instance_group(desired_size)
-                print(f"Scaling down: Instance {instance_to_remove} scheduled for removal.")
-                active_instances.remove(instance_to_remove)
-                current_size = desired_size
+        # --- Scaling Up or Offloading Load ---
+        if (cpu_usage > CPU_SCALE_UP_THRESHOLD or mem_usage > MEM_SCALE_UP_THRESHOLD):
+            # Check if there is any available cloud node (from instance group) that is not yet sharing load.
+            available_nodes = get_instance_names() - active_instances
+            if available_nodes:
+                # Offload: Pick one available cloud node to start remote load.
+                node = list(available_nodes)[0]
+                print(f"Offloading load to available cloud node: {node}")
+                if wait_for_instance(node):
+                    start_remote_load(node)
+                    active_instances.add(node)
+                    # Update current_size if needed.
+                    current_size = max(current_size, len(active_instances))
+                else:
+                    print(f"Cloud node {node} not ready for load offloading.")
             else:
-                print("No active remote load instance found to scale down.")
+                # No available node found – scale up if not at maximum.
+                if current_size < MAX_INSTANCES:
+                    before_nodes = get_instance_names()
+                    desired_size = current_size + 1
+                    scale_instance_group(desired_size)
+                    
+                    new_node = None
+                    timeout = 300  # seconds to wait for new node detection
+                    start_wait = time.time()
+                    while time.time() - start_wait < timeout:
+                        after_nodes = get_instance_names()
+                        diff = after_nodes - before_nodes
+                        if diff:
+                            new_node = list(diff)[0]
+                            break
+                        time.sleep(5)
+                    
+                    if new_node:
+                        print(f"New cloud node detected: {new_node}. Waiting for it to be ready...")
+                        if wait_for_instance(new_node):
+                            start_remote_load(new_node)
+                            active_instances.add(new_node)
+                            current_size = desired_size
+                        else:
+                            print(f"Cloud node {new_node} did not become RUNNING. Reverting scale-up.")
+                            scale_instance_group(current_size)
+                    else:
+                        print("No new cloud node detected after scaling up. Reverting scale-up.")
+                        scale_instance_group(current_size)
+                else:
+                    print("Maximum cloud nodes reached. Load offloading is already in effect.")
 
+        # --- Scaling Down ---
+        elif (cpu_usage < CPU_SCALE_DOWN_THRESHOLD and mem_usage < MEM_SCALE_DOWN_THRESHOLD):
+            if current_size > MIN_INSTANCES:
+                if active_instances:
+                    # Remove one cloud node from sharing load.
+                    node_to_remove = list(active_instances)[-1]
+                    desired_size = current_size - 1
+                    scale_instance_group(desired_size)
+                    print(f"Scaling down: Removing cloud node {node_to_remove}.")
+                    active_instances.remove(node_to_remove)
+                    current_size = desired_size
+                else:
+                    print("No active cloud node to remove, though scale down conditions met.")
+            else:
+                print("At minimum cloud node count; cannot scale down further.")
+
+        # Sleep for the check interval before next monitoring iteration.
         time.sleep(CHECK_INTERVAL)
 
 # --------------
@@ -224,13 +245,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.run_load:
-        # This branch runs on any node (local or cloud) that should generate load.
+        # For local or cloud node load generation.
         start_local_load(NUM_LOAD_THREADS, CPU_LOAD_CYCLE_DURATION)
-        # Keep the load generator running indefinitely.
         while True:
             time.sleep(1)
     else:
-        # Controller mode: start local load and manage scaling across the cluster.
+        # Controller mode: start local load and manage cloud node scaling/offloading.
         print("Starting unified load generator on local node and initiating cluster monitoring...")
         start_local_load(NUM_LOAD_THREADS, CPU_LOAD_CYCLE_DURATION)
         monitor_resources()
