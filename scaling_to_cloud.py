@@ -25,14 +25,14 @@ CHECK_INTERVAL = config["instance"]["check_interval"]  # Seconds between resourc
 
 # Instance group limits
 MAX_INSTANCES = 5
-MIN_INSTANCES = 0
+MIN_INSTANCES = 1  # Always keep at least 1 instance running
 
 # Load generation settings (used uniformly on all nodes)
 NUM_LOAD_THREADS = config["instance"].get("cpu_load_threads", 1)
 CPU_LOAD_CYCLE_DURATION = config["instance"].get("cpu_load_cycle_duration", 60)  # seconds
 
 # Global variables for the controller
-current_size = 0  # current number of cloud instances in the managed group
+current_size = MIN_INSTANCES  # start with the minimum instance count
 active_instances = set()  # names of cloud instances running our load generator
 
 # --------------
@@ -197,39 +197,4 @@ def monitor_resources():
                 else:
                     print(f"Instance {new_instance} did not become RUNNING in time.")
             else:
-                print("No new instance detected after scaling up. Reverting desired size.")
-        
-        # --- Scaling Down ---
-        elif (cpu_usage < CPU_SCALE_DOWN_THRESHOLD and mem_usage < MEM_SCALE_DOWN_THRESHOLD) and current_size > MIN_INSTANCES:
-            if active_instances:
-                # Remove one instance from the cloud cluster
-                instance_to_remove = list(active_instances)[-1]
-                current_size -= 1
-                scale_instance_group(current_size)
-                print(f"Scaling down: Instance {instance_to_remove} scheduled for removal.")
-                active_instances.remove(instance_to_remove)
-            else:
-                print("No active remote load instance found to scale down.")
-
-        time.sleep(CHECK_INTERVAL)
-
-# --------------
-# Main Execution Block with Argument Parsing
-# --------------
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified Load Generator and Cluster Scaling Controller")
-    parser.add_argument("--run-load", action="store_true",
-                        help="Run the unified load generator function (for local or remote node).")
-    args = parser.parse_args()
-
-    if args.run_load:
-        # This branch runs on any node (local or cloud) that should generate load.
-        start_local_load(NUM_LOAD_THREADS, CPU_LOAD_CYCLE_DURATION)
-        # Keep the load generator running indefinitely.
-        while True:
-            time.sleep(1)
-    else:
-        # Controller mode: start local load and manage scaling across the cluster.
-        print("Starting unified load generator on local node and initiating cluster monitoring...")
-        start_local_load(NUM_LOAD_THREADS, CPU_LOAD_CYCLE_DURATION)
-        monitor_resources()
+                print("No new instance detected after scaling up. Re
