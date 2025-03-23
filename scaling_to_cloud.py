@@ -12,36 +12,32 @@ with open("config.yaml", "r") as file:
 # Extract values from the config dictionary
 INSTANCE_NAME = config["instance"]["name"]
 ZONE = config["instance"]["zone"]
-MACHINE_TYPE = config["instance"]["machine_type"]
-IMAGE_FAMILY = config["instance"]["image_family"]
-IMAGE_PROJECT = config["instance"]["image_project"]
+# MACHINE_TYPE = config["instance"]["machine_type"]
+# IMAGE_FAMILY = config["instance"]["image_family"]
+# IMAGE_PROJECT = config["instance"]["image_project"]
 THRESHOLD = config["instance"]["threshold"]  # Percentage for CPU and Memory usage
 CHECK_INTERVAL = config["instance"]["check_interval"]  # Seconds between checks
 
 
 def scale_to_public_cloud():
     """
-    Trigger a Google Cloud VM creation using the gcloud CLI.
+    Trigger the use of an existing Google Cloud VM by starting it if needed.
     """
-    print("Threshold exceeded. Launching new public cloud instance...")
-    # Build the command list using the config values
+    print("Threshold exceeded. Using existing public cloud instance...")
     command = [
         "gcloud",
         "compute",
         "instances",
-        "create",
+        "start",
         INSTANCE_NAME,
         f"--zone={ZONE}",
-        f"--machine-type={MACHINE_TYPE}",
-        f"--image-family={IMAGE_FAMILY}",
-        f"--image-project={IMAGE_PROJECT}",
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
-        print("Instance creation output:")
+        print("Instance start output:")
         print(result.stdout)
     except subprocess.CalledProcessError as e:
-        print("Error creating instance:")
+        print("Error starting instance:")
         print(e.stderr)
 
 
