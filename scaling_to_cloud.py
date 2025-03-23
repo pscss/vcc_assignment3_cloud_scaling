@@ -35,7 +35,6 @@ CPU_LOAD_CYCLE_DURATION = config["instance"].get("cpu_load_cycle_duration", 60) 
 current_size = 0  # current number of cloud instances in the managed group
 active_instances = set()  # names of cloud instances running our load generator
 
-
 # --------------
 # Unified Load Generator Function
 # --------------
@@ -66,7 +65,6 @@ def variable_cpu_load(total_duration):
             _ = sum(i * i for i in range(1000))
         time.sleep(sleep_time)
 
-
 def start_local_load(num_threads, cycle_duration):
     """
     Start load generator threads locally.
@@ -75,7 +73,6 @@ def start_local_load(num_threads, cycle_duration):
         t = threading.Thread(target=variable_cpu_load, args=(cycle_duration,), daemon=True)
         t.start()
     print(f"Started {num_threads} local CPU load thread(s) with a {cycle_duration}-second cycle.")
-
 
 # --------------
 # Remote Load Functions (for cloud VMs)
@@ -99,7 +96,6 @@ def wait_for_instance(instance_name, timeout=300):
         time.sleep(5)
     return False
 
-
 def start_remote_load(instance_name):
     """
     Remotely start the unified load generator on the cloud instance.
@@ -121,7 +117,6 @@ def start_remote_load(instance_name):
     except subprocess.CalledProcessError as e:
         print(f"Error starting remote load on {instance_name}: {e}")
 
-
 def get_instance_names():
     """
     Return a set of instance names currently in the managed instance group.
@@ -135,7 +130,6 @@ def get_instance_names():
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     instances = set(result.stdout.strip().splitlines())
     return instances
-
 
 # --------------
 # Scaling and Monitoring Logic
@@ -159,7 +153,6 @@ def scale_instance_group(new_size):
         print("Error resizing instance group:")
         print(e.stderr)
 
-
 def monitor_resources():
     """
     Monitor local CPU and Memory usage and manage scaling of the cluster.
@@ -181,23 +174,31 @@ def monitor_resources():
         # --- Scaling Up ---
         if (cpu_usage > CPU_SCALE_UP_THRESHOLD or mem_usage > MEM_SCALE_UP_THRESHOLD) and current_size < MAX_INSTANCES:
             before_instances = get_instance_names()
-            current_size += 1
-            scale_instance_group(current_size)
-            # Give time for the new instance to register in the instance group
-            time.sleep(5)
-            after_instances = get_instance_names()
-            new_instances = after_instances - before_instances
-            if new_instances:
-                new_instance = list(new_instances)[0]
+            desired_size = current_size + 1
+            scale_instance_group(desired_size)
+            
+            new_instance = None
+            timeout = 300  # seconds to wait for new instance detection
+            start_wait = time.time()
+            while time.time() - start_wait < timeout:
+                after_instances = get_instance_names()
+                diff = after_instances - before_instances
+                if diff:
+                    new_instance = list(diff)[0]
+                    break
+                time.sleep(5)
+            
+            if new_instance:
                 print(f"New instance detected: {new_instance}. Waiting for it to be ready...")
                 if wait_for_instance(new_instance):
                     start_remote_load(new_instance)
                     active_instances.add(new_instance)
+                    current_size = desired_size  # update only if new instance came online
                 else:
                     print(f"Instance {new_instance} did not become RUNNING in time.")
             else:
-                print("No new instance detected after scaling up.")
-
+                print("No new instance detected after scaling up. Reverting desired size.")
+        
         # --- Scaling Down ---
         elif (cpu_usage < CPU_SCALE_DOWN_THRESHOLD and mem_usage < MEM_SCALE_DOWN_THRESHOLD) and current_size > MIN_INSTANCES:
             if active_instances:
@@ -211,7 +212,6 @@ def monitor_resources():
                 print("No active remote load instance found to scale down.")
 
         time.sleep(CHECK_INTERVAL)
-
 
 # --------------
 # Main Execution Block with Argument Parsing
